@@ -1,0 +1,666 @@
+openapi: 3.1.0
+
+info:
+  title: Trams API
+  version: 1.0.0
+  description: |
+    Public HTTP surface of the Trams event-driven microservices system, served
+    by the API Gateway — the only publicly reachable component.
+
+    Two things are worth knowing before reading the endpoints:
+
+    **Registration is asynchronous downstream.** `POST /auth/register` returns
+    201 immediately and the resulting notification is produced later, over a
+    message broker. It returns 201 even if the broker is completely down: the
+    event is committed to a transactional outbox alongside the user and
+    published on recovery. Poll `GET /notifications` to observe the effect.
+
+    **The notification surface is read-only.** There is deliberately no endpoint
+    that creates a notification. The only way one exists is by consuming a
+    domain event from JetStream — if a "send" endpoint existed here, the User
+    Service could call it over REST and the event-driven design would be
+    decoration.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+  - url: https://api.trams.example/api/v1
+    description: Production (illustrative)
+
+tags:
+  - name: Authentication
+    description: Registration, sign-in, token rotation.
+  - name: Users
+    description: Profile management. Every mutation emits a domain event.
+  - name: Notifications
+    description: Read-only history of what the event consumer delivered.
+  - name: Operations
+    description: Liveness and readiness probes (served outside /api/v1).
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Create an account
+      description: |
+        Creates a user and emits `user.registered`, which produces a welcome
+        notification asynchronously.
+
+        The user row and the event are written in a single database
+        transaction, so there is no state in which the account exists but the
+        notification was never queued.
+      operationId: register
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 254
+                password:
+                  type: string
+                  minLength: 10
+                  maxLength: 200
+                  description: >
+                    Length is weighted over character-class rules, per current
+                    NIST guidance. The upper bound prevents a denial-of-service
+                    via an unbounded hash input.
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+            examples:
+              default:
+                value:
+                  email: ada@example.com
+                  password: Str0ng!Passw0rd
+                  name: Ada Lovelace
+      responses:
+        '201':
+          description: Account created
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: |
+            Email already registered. Decided by a database UNIQUE index rather
+            than a check-then-insert, so concurrent registrations cannot both
+            succeed.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Sign in
+      description: |
+        An unknown email and an incorrect password return an identical
+        response, and the unknown-email path performs a dummy hash so response
+        timing matches. Distinguishing them would make this endpoint an oracle
+        for which addresses have accounts.
+      operationId: login
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Invalid email or password (indistinguishable)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate tokens
+      description: |
+        Exchanges a refresh token for a new pair. The presented token is
+        consumed and revoked.
+
+        **Reuse detection:** presenting an already-rotated token returns 401
+        and revokes every session for that user. A replayed token means either
+        an attacker or the legitimate client holds a stale one, and there is no
+        way to tell which — so a fresh sign-in is forced.
+      operationId: refresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResult' }
+        '401':
+          description: Token unrecognised, expired, or already used
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke a session
+      description: |
+        Idempotent — an unknown or already-revoked token still returns 204. The
+        caller's intent is satisfied either way, and an error would reveal
+        whether the token was real.
+      operationId: logout
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+                allSessions:
+                  type: boolean
+                  default: false
+                  description: Revoke every session for this user.
+      responses:
+        '204': { description: Session revoked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Current user
+      description: >
+        Preferred over `/users/{id}`: it takes no client-supplied identifier,
+        so there is no ownership check to get wrong.
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: The authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+    patch:
+      tags: [Users]
+      summary: Update profile
+      description: |
+        Emits `user.updated` carrying `changedFields`, so the consumer decides
+        what is worth notifying about.
+
+        Submitting the current value emits nothing — notifying about a
+        non-event is noise. An empty object is rejected rather than treated as
+        a silent no-op.
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 200 }
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: That email is already in use
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+    delete:
+      tags: [Users]
+      summary: Delete account
+      description: |
+        Emits `user.deleted`; refresh tokens cascade.
+
+        The deletion notification is delivered *after* the row is gone — the
+        event payload carries the email and name, so the consumer never has to
+        query a deleted record.
+
+        Do not send `content-type: application/json` with no body; an empty
+        JSON body is malformed and is rejected with 400.
+      operationId: deleteCurrentUser
+      responses:
+        '204': { description: Account deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/change-password:
+    post:
+      tags: [Users]
+      summary: Change password
+      description: |
+        Emits `user.password_changed` and revokes all other sessions.
+
+        The current password is required even though the caller is already
+        authenticated: a stolen access token alone must not let an attacker
+        lock the owner out. Sessions are revoked because if the change is
+        prompted by a compromise, leaving the attacker's refresh token live
+        would defeat the point.
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, minLength: 1 }
+                newPassword: { type: string, minLength: 10, maxLength: 200 }
+      responses:
+        '204': { description: Password changed; other sessions revoked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Current password incorrect
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Fetch a user by id
+      description: >
+        A non-admin requesting another account receives **404, not 403**. A 403
+        would confirm the account exists and allow id enumeration.
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List all users (admin)
+      operationId: listUsers
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Paginated users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: Own notification history
+      description: >
+        Scoped to the authenticated subject from the verified token — never to a
+        user id supplied by the caller. Reading someone else's notifications
+        must not be one query parameter away.
+      operationId: listNotifications
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Paginated notifications, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/by-event/{eventId}:
+    get:
+      tags: [Notifications]
+      summary: Notification produced by a specific event
+      description: For tracing a known event id through to its delivery.
+      operationId: getNotificationByEvent
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The notification
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notification: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications/dead-letters:
+    get:
+      tags: [Notifications]
+      summary: Dead-lettered messages (admin)
+      description: |
+        Messages that could never be processed, retained for investigation
+        rather than dropped.
+
+        `delivery_count` is meaningful: `1` means the message was permanently
+        invalid and quarantined on the first attempt instead of consuming the
+        retry budget. A higher count with reason `retries exhausted` means it
+        was transiently failing.
+
+        Admin-only because a dead letter contains the raw event payload.
+      operationId: listDeadLetters
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Paginated dead letters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deadLetters:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeadLetter' }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /notifications/stats:
+    get:
+      tags: [Notifications]
+      summary: Delivery counters (admin)
+      operationId: notificationStats
+      responses:
+        '200':
+          description: Counters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: object
+                    properties:
+                      sent: { type: integer }
+                      failed: { type: integer }
+                  deadLetters: { type: integer }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        RS256-signed access token, 15-minute lifetime.
+
+        The gateway holds only the public key, so it can verify a token but
+        cannot mint one — deliberately, since it is the internet-facing
+        component. Each backend service re-verifies the signature itself rather
+        than trusting a header from upstream.
+
+  parameters:
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }
+      description: >
+        Optional trace id. One is minted if omitted. Echoed on the response and
+        threaded through both services and the broker, so a single id traces a
+        request end to end including the asynchronous notification.
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  headers:
+    CorrelationId:
+      description: The correlation id for this request.
+      schema: { type: string }
+
+  schemas:
+    User:
+      type: object
+      description: >
+        A user as exposed over HTTP. `password_hash` is structurally absent —
+        the DTO type omits it, so it cannot leak by accident.
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string, enum: [user, admin] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Tokens:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: RS256 JWT, 15-minute lifetime, stateless.
+        refreshToken:
+          type: string
+          description: >
+            Opaque 256-bit random value, 7-day lifetime. Stored server-side as
+            a SHA-256 hash, so a database leak yields no usable sessions.
+        expiresIn: { type: string, example: 15m }
+        tokenType: { type: string, enum: [Bearer] }
+
+    AuthResult:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        tokens: { $ref: '#/components/schemas/Tokens' }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        eventId:
+          type: string
+          format: uuid
+          description: >
+            The originating event. Carries a UNIQUE index in the database — this
+            is what turns at-least-once delivery into exactly-once effect.
+        eventType:
+          type: string
+          enum:
+            [user.registered, user.updated, user.password_changed, user.deleted]
+        recipient: { type: string }
+        channel: { type: string, enum: [console, smtp] }
+        subject: { type: string }
+        body: { type: string }
+        status: { type: string, enum: [sent, failed] }
+        attempts:
+          type: integer
+          description: Delivery attempts. Greater than 1 means retries occurred.
+        correlationId: { type: string }
+        createdAt: { type: string, format: date-time }
+        sentAt: { type: [string, 'null'], format: date-time }
+
+    DeadLetter:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: [string, 'null'] }
+        event_type: { type: [string, 'null'] }
+        subject: { type: string }
+        raw_payload: { type: string }
+        reason: { type: string }
+        correlation_id: { type: [string, 'null'] }
+        delivery_count: { type: integer }
+        stream_sequence: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    Pagination:
+      type: object
+      properties:
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        hasMore: { type: boolean }
+
+    Problem:
+      type: object
+      description: RFC 9457 problem document. Branch on `code`, not on prose.
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - INVALID_CREDENTIALS
+            - TOKEN_EXPIRED
+            - TOKEN_INVALID
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - RATE_LIMITED
+            - UPSTREAM_UNAVAILABLE
+            - INTERNAL_ERROR
+        detail:
+          type: string
+          description: >
+            Human-readable. For 5xx this is always a generic string — internal
+            messages are logged, never returned.
+        errors:
+          type: array
+          description: Field-level detail on validation failures.
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              message: { type: string }
+        correlationId:
+          type: string
+          description: Quote this in a bug report; it maps to exact log lines.
+
+  responses:
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://trams.local/errors/validation-error
+            title: Validation Failed
+            status: 400
+            code: VALIDATION_ERROR
+            detail: Request validation failed
+            errors:
+              - path: email
+                message: Must be a valid email address
+            correlationId: 0b7c1f2e-91aa-4d3c-9f10-2ac4e5b7d8e9
+    Unauthorized:
+      description: Missing, malformed, expired or invalid credentials
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: >
+        Not found — or found but not yours. The two are deliberately
+        indistinguishable to prevent enumeration.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    RateLimited:
+      description: >
+        Rate limit exceeded. `/auth/*` allows 10 requests per minute per IP;
+        other routes allow 100.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

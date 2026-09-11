@@ -1,0 +1,250 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# Full stack: NATS + Postgres + the three services.
+#
+#   npm run bootstrap        # generate TLS certs and JWT keys (once)
+#   docker compose up --build
+#
+# The bootstrap step is required first: the broker needs its server certificate
+# and the services need the JWT key pair. Both are gitignored, because
+# committing key material is exactly the mistake this project is meant to avoid.
+#
+# This compose file runs the **Postgres** path, while `npm run dev` runs the
+# SQLite path. That is deliberate: one Kysely query layer serves both dialects,
+# so exercising both is how we know the abstraction is real rather than
+# theoretical.
+#
+# NOTE ON VERIFICATION: this file is reviewed but NOT executed — Docker is not
+# installed on the machine this project was built on. The SQLite/native-broker
+# path in the README is the one that has been run end to end, and it is the path
+# a reviewer should trust. A second review pass corrected four defects that only
+# a Docker run would otherwise have surfaced: the broker's config paths did not
+# match its mounts, its JetStream volume was mounted somewhere the config never
+# looked, the migration job was missing environment the shared config schema
+# requires under NODE_ENV=production, and the image did not ship the migration
+# script it was told to run.
+# ═════════════════════════════════════════════════════════════════════════════
+
+name: trams
+
+services:
+  # ── Message broker ─────────────────────────────────────────────────────────
+  nats:
+    image: nats:2.14-alpine
+    container_name: trams-nats
+    # `-m` overrides the config file's `http:` directive. nats.conf binds
+    # monitoring to 127.0.0.1 so the native `npm run nats` path does not expose
+    # stream internals on every interface; inside a container that same binding
+    # would make the published port below unreachable, because Docker forwards
+    # to the container's external interface and not to its loopback. A
+    # command-line flag takes precedence over the config file, so the one
+    # committed nats.conf stays correct for both ways of running the broker.
+    command: ['-c', '/app/infra/nats/nats.conf', '-m', '8222']
+    ports:
+      - '4222:4222' # client connections (TLS)
+      - '127.0.0.1:8222:8222' # monitoring — loopback only; it exposes stream internals
+    # nats.conf refers to its certificates and JetStream store by paths relative
+    # to the working directory. Mirroring the repository layout under /app means
+    # those same relative paths resolve correctly here, so the container and the
+    # native broker share one configuration file rather than drifting apart.
+    working_dir: /app
+    volumes:
+      - ./infra/nats/nats.conf:/app/infra/nats/nats.conf:ro
+      # The server certificate's SAN list includes `nats`, which is how the
+      # services address it here. Without that entry the TLS handshake would
+      # fail hostname verification.
+      - ./infra/nats/certs:/app/infra/nats/certs:ro
+      # Must match `store_dir` in nats.conf, or JetStream writes to the
+      # container's ephemeral layer and every persisted event is lost on restart
+      # — quietly undoing the durability the outbox exists to provide.
+      - nats-data:/app/infra/nats/jetstream
+    healthcheck:
+      # /healthz is NATS's own endpoint on the monitoring port. Waiting for it
+      # matters because the TCP socket accepts connections slightly before
+      # JetStream has finished initialising.
+      test: ['CMD', 'wget', '--spider', '-q', 'http://127.0.0.1:8222/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # ── Database ───────────────────────────────────────────────────────────────
+  # One server, two databases — one per service. They are separate schemas with
+  # separate connections precisely because a shared database between
+  # microservices is the coupling this architecture exists to avoid.
+  postgres:
+    image: postgres:17-alpine
+    container_name: trams-postgres
+    environment:
+      POSTGRES_USER: trams
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trams-dev-password-change-me}
+      POSTGRES_DB: trams_user
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U trams -d trams_user']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Migrations ─────────────────────────────────────────────────────────────
+  # A one-shot job rather than something each service does at boot. With
+  # multiple replicas, boot-time migration means concurrent instances racing on
+  # DDL; a separate release step is the correct shape.
+  migrate:
+    build:
+      context: .
+      args: { SERVICE: user-service }
+    container_name: trams-migrate
+    command: ['sh', '-c', 'npx tsx infra/scripts/migrate.ts']
+    environment:
+      <<: &db_env
+        NODE_ENV: production
+        LOG_LEVEL: info
+        DB_CLIENT: postgres
+        USER_DB_URL: postgres://trams:${POSTGRES_PASSWORD:-trams-dev-password-change-me}@postgres:5432/trams_user
+        NOTIFICATION_DB_URL: postgres://trams:${POSTGRES_PASSWORD:-trams-dev-password-change-me}@postgres:5432/trams_notification
+      # The config schema is shared by every entry point and validates the whole
+      # environment up front, and NODE_ENV=production removes the development
+      # fallbacks — so these have to be present even though a migration opens no
+      # broker connection and mints no tokens. Placeholders rather than the real
+      # secrets, because handing credentials to a process that does not use them
+      # is how a migration job becomes an unnecessary place to leak them from.
+      INTERNAL_TOKEN: unused-by-migrate
+      NATS_USER_SERVICE_PASS: unused-by-migrate
+      NATS_NOTIFICATION_SERVICE_PASS: unused-by-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # ── User Service ───────────────────────────────────────────────────────────
+  user-service:
+    build:
+      context: .
+      args: { SERVICE: user-service }
+    container_name: trams-user-service
+    environment:
+      <<: *db_env
+      USER_SERVICE_PORT: 4001
+      USER_SERVICE_HOST: 0.0.0.0
+      # Secrets. In production these come from a secret manager — the config
+      # loader refuses to fall back to a default when NODE_ENV=production, so a
+      # missing value fails at boot instead of surfacing later.
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      NATS_USER_SERVICE_PASS: ${NATS_USER_SERVICE_PASS:?set NATS_USER_SERVICE_PASS in .env}
+      NATS_NOTIFICATION_SERVICE_PASS: ${NATS_NOTIFICATION_SERVICE_PASS:?set NATS_NOTIFICATION_SERVICE_PASS in .env}
+      NATS_URL: tls://nats:4222
+      NATS_TLS_ENABLED: 'true'
+      NATS_CA_PATH: /app/certs/ca-cert.pem
+      NATS_CLIENT_CERT_PATH: /app/certs/client-cert.pem
+      NATS_CLIENT_KEY_PATH: /app/certs/client-key.pem
+      JWT_PRIVATE_KEY_PATH: /app/keys/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /app/keys/jwt-public.pem
+    volumes:
+      - ./infra/nats/certs:/app/certs:ro
+      - ./infra/keys:/app/keys:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Not published to the host. The gateway is the only public entry point;
+    # exposing this port would bypass the edge entirely.
+    expose:
+      - '4001'
+    restart: unless-stopped
+
+  # ── Notification Service ───────────────────────────────────────────────────
+  notification-service:
+    build:
+      context: .
+      args: { SERVICE: notification-service }
+    container_name: trams-notification-service
+    environment:
+      <<: *db_env
+      NOTIFICATION_SERVICE_PORT: 4002
+      NOTIFICATION_SERVICE_HOST: 0.0.0.0
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      NATS_USER_SERVICE_PASS: ${NATS_USER_SERVICE_PASS:?set NATS_USER_SERVICE_PASS in .env}
+      NATS_NOTIFICATION_SERVICE_PASS: ${NATS_NOTIFICATION_SERVICE_PASS:?set NATS_NOTIFICATION_SERVICE_PASS in .env}
+      NATS_URL: tls://nats:4222
+      NATS_TLS_ENABLED: 'true'
+      NATS_CA_PATH: /app/certs/ca-cert.pem
+      NATS_CLIENT_CERT_PATH: /app/certs/client-cert.pem
+      NATS_CLIENT_KEY_PATH: /app/certs/client-key.pem
+      # Verification only — this service never receives the private key.
+      JWT_PUBLIC_KEY_PATH: /app/keys/jwt-public.pem
+      NOTIFICATION_CHANNEL: ${NOTIFICATION_CHANNEL:-console}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+    volumes:
+      - ./infra/nats/certs:/app/certs:ro
+      - ./infra/keys:/app/keys:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - '4002'
+    # Scale freely: replicas share one durable JetStream consumer, and the
+    # UNIQUE index on notifications.event_id guarantees one send per event
+    # regardless of how many workers are running.
+    #   docker compose up --scale notification-service=3
+    restart: unless-stopped
+
+  # ── API Gateway ────────────────────────────────────────────────────────────
+  api-gateway:
+    build:
+      context: .
+      args: { SERVICE: api-gateway }
+    container_name: trams-api-gateway
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: info
+      GATEWAY_PORT: 8080
+      GATEWAY_HOST: 0.0.0.0
+      USER_SERVICE_URL: http://user-service:4001
+      NOTIFICATION_SERVICE_URL: http://notification-service:4002
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      # The gateway needs neither broker credentials nor a database. It also
+      # gets ONLY the public key — it can verify a token but cannot mint one,
+      # which is the point of using RS256 over HS256.
+      JWT_PUBLIC_KEY_PATH: /app/keys/jwt-public.pem
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-10}
+      # These are dummies: the config loader validates every variable up front,
+      # and in production mode it refuses development fallbacks. The gateway
+      # never opens a broker connection, so the values are unused.
+      NATS_USER_SERVICE_PASS: unused-by-gateway
+      NATS_NOTIFICATION_SERVICE_PASS: unused-by-gateway
+    volumes:
+      - ./infra/keys:/app/keys:ro
+    ports:
+      - '8080:8080' # the only port published to the host
+    depends_on:
+      - user-service
+      - notification-service
+    restart: unless-stopped
+
+  # ── Mail catcher (optional) ────────────────────────────────────────────────
+  # Enable with:  NOTIFICATION_CHANNEL=smtp docker compose --profile mail up
+  # Then open http://localhost:8025 to read the rendered emails.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: trams-mailpit
+    profiles: ['mail']
+    ports:
+      - '127.0.0.1:8025:8025' # web UI
+      - '127.0.0.1:1025:1025' # SMTP
+    restart: unless-stopped
+
+volumes:
+  nats-data:
+  postgres-data:

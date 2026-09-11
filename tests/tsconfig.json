@@ -1,0 +1,22 @@
+{
+  "extends": "../tsconfig.base.json",
+  "//": "Covers the test suite, the infra scripts and the root tool configs. Deliberately NOT a composite project: the tests import service internals by relative source path (e.g. ../../services/user-service/src/app.js), which a composite project would reject because those files belong to another project's file list. Type-checking them as plain sources is exactly what we want here — it verifies the tests against the real implementation rather than against emitted declarations.",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false,
+    "noEmit": true,
+    "types": ["node"],
+    // Tests legitimately reference optional fields and inject partial objects.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "**/*.ts",
+    "../vitest.config.ts",
+    "../infra/scripts/**/*.ts",
+    "../services/**/src/**/*.ts",
+    "../packages/**/src/**/*.ts"
+  ]
+}

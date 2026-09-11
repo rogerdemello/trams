@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Solution-style root config. It contains no files of its own — it only references the projects, so `tsc --build` compiles them in dependency order and `npm run typecheck` covers the whole repo in one pass.",
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./services/user-service" },
+    { "path": "./services/notification-service" },
+    { "path": "./services/api-gateway" }
+  ]
+}

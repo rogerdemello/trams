@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.probe/
+data/
+infra/nats/certs/
+infra/nats/jetstream/
+infra/keys/
+*.tsbuildinfo
+package-lock.json

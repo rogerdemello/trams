@@ -1,0 +1,25 @@
+{
+  "name": "@trams/notification-service",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Consumes user domain events from JetStream and delivers notifications; no REST or WebSocket link to the User Service",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@fastify/helmet": "^13.1.1",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
+    "@trams/shared": "*",
+    "fastify": "^5.12.3",
+    "jose": "^6.2.12",
+    "kysely": "^0.29.5",
+    "nodemailer": "^10.0.3",
+    "pino": "^10.3.1",
+    "zod": "^4.6.1"
+  }
+}

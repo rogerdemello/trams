@@ -1,0 +1,51 @@
+{
+  "name": "trams",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Event-driven microservices: API Gateway, User Service, Notification Service, communicating only over NATS JetStream",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --force",
+    "clean": "tsc --build --clean",
+    "certs": "node infra/scripts/gen-certs.mjs",
+    "keys": "node infra/scripts/gen-jwt-keys.mjs",
+    "bootstrap": "npm run certs && npm run keys && npm run db:migrate",
+    "nats": "nats-server -c infra/nats/nats.conf",
+    "db:migrate": "tsx infra/scripts/migrate.ts",
+    "dev": "concurrently -n user,notif,gateway -c cyan,magenta,green \"npm:dev:user\" \"npm:dev:notif\" \"npm:dev:gateway\"",
+    "dev:user": "tsx watch services/user-service/src/main.ts",
+    "dev:notif": "tsx watch services/notification-service/src/main.ts",
+    "dev:gateway": "tsx watch services/api-gateway/src/main.ts",
+    "start": "concurrently -n user,notif,gateway -c cyan,magenta,green \"node services/user-service/dist/main.js\" \"node services/notification-service/dist/main.js\" \"node services/api-gateway/dist/main.js\"",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:watch": "vitest",
+    "smoke": "tsx tests/smoke/smoke.ts",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.2",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.23.1",
+    "concurrently": "^10.0.5",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^3.2.7"
+  }
+}

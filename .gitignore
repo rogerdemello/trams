@@ -1,0 +1,30 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Secrets and generated credentials — never commit these
+.env
+.env.*
+!.env.example
+infra/nats/certs/
+infra/keys/
+
+# Local datastores and broker state
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+infra/nats/jetstream/
+
+# Scratch space used while developing
+.probe/
+
+# Logs / editor / OS
+*.log
+npm-debug.log*
+coverage/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

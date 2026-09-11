@@ -1,0 +1,23 @@
+{
+  "name": "@trams/api-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The only publicly reachable component: edge hardening, JWT verification, correlation, and proxying",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "tsc --build",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.1",
+    "@fastify/rate-limit": "^11.2.0",
+    "@trams/shared": "*",
+    "fastify": "^5.12.3",
+    "pino": "^10.3.1",
+    "undici": "^7.17.0",
+    "zod": "^4.6.1"
+  }
+}

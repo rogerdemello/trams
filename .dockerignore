@@ -1,0 +1,34 @@
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+
+# Secrets and key material are mounted at runtime, never baked into an image.
+.env
+.env.*
+!.env.example
+infra/nats/certs
+infra/keys
+
+# Local state
+data
+*.db
+*.db-*
+infra/nats/jetstream
+.probe
+coverage
+
+# Not needed to build or run the services
+tests
+docs
+plan.md
+README.md
+.git
+.gitignore
+.github
+.vscode
+.idea
+eslint.config.js
+.prettierrc.json
+.prettierignore
