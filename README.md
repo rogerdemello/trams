@@ -32,10 +32,10 @@ brew install nats-server         # macOS
 # Linux: https://github.com/nats-io/nats-server/releases
 
 # 2. Install and configure
-npm install
+npm install                      # see the note below if this fails to compile
 cp .env.example .env
 
-# 3. Generate TLS certificates and the JWT key pair, then migrate
+# 3. Compile, generate TLS certificates and the JWT key pair, then migrate
 npm run bootstrap
 
 # 4. Start the broker (leave running)
@@ -44,6 +44,10 @@ npm run nats
 # 5. In a second terminal — start all three services
 npm run dev
 ```
+
+> **If `npm install` fails with `gyp ERR! find VS` —** run `npm install --ignore-scripts`
+> instead, then carry on from step 2. Explanation in
+> [Troubleshooting](#troubleshooting); nothing is wrong with the checkout.
 
 Then, in a third terminal:
 
@@ -384,6 +388,55 @@ NOTIFICATION_CHANNEL=smtp docker compose --profile mail up   # UI at :8025
 | `npm run typecheck` / `lint` / `format` | Quality gates                                        |
 | `npm run certs -- --force`              | Regenerate TLS certificates                          |
 | `npm run keys -- --force`               | Regenerate JWT keys (invalidates all tokens)         |
+
+---
+
+## Troubleshooting
+
+### `npm install` fails with `gyp ERR! find VS`
+
+```
+gyp ERR! find VS You need to install the latest version of Visual Studio
+npm error command failed: node-gyp rebuild   (better-sqlite3)
+```
+
+Run this instead, then continue from step 2 of the quick start:
+
+```bash
+npm install --ignore-scripts
+```
+
+**Why.** `better-sqlite3` ships prebuilt binaries for every common platform and
+declares no install script. But it does contain a `binding.gyp`, and npm's
+documented fallback for a package with a `binding.gyp` and no install script is
+to compile it with `node-gyp` -- which needs a C++ toolchain. npm only takes that
+fallback when it installs from a **lockfile**: resolving fresh from the registry,
+it reads `hasInstallScript: false` and skips the build, but the lockfile does not
+carry that flag. Since committing a lockfile is correct, a clean clone takes the
+compiling path.
+
+This is not specific to this project. A `package.json` containing nothing but
+`better-sqlite3` reproduces it exactly: the first `npm install` succeeds and
+writes a lockfile, and the second one fails. Observed with npm 11.7.0 and Node
+24.18.0 on Windows with no Visual Studio installed.
+
+`--ignore-scripts` skips the unnecessary build and uses the prebuilt binary, which
+is what the package intends. It is safe here because **no dependency in this tree
+needs an install script**: `better-sqlite3` declares none, `@node-rs/argon2` ships
+prebuilt platform binaries as optional dependencies, and everything else is pure
+JavaScript. It is not set in a committed `.npmrc`, because a future dependency
+that genuinely needed a `postinstall` would then fail silently -- a worse problem
+than the visible one it would hide.
+
+Installing the [Visual Studio C++ build tools](https://github.com/nodejs/node-gyp#on-windows)
+also fixes it, by making the unnecessary compile succeed rather than skipping it.
+
+### `Cannot find module '@trams/shared/dist/index.js'`
+
+The TypeScript has not been compiled. `dist/` is generated and therefore
+gitignored, so a fresh clone has none. `npm run bootstrap` compiles first, so
+run that before `npm run dev` -- the quick start already has it in the right
+order.
 
 ---
 

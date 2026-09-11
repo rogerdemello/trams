@@ -17,7 +17,7 @@
     "clean": "tsc --build --clean",
     "certs": "node infra/scripts/gen-certs.mjs",
     "keys": "node infra/scripts/gen-jwt-keys.mjs",
-    "bootstrap": "npm run certs && npm run keys && npm run db:migrate",
+    "bootstrap": "npm run build && npm run certs && npm run keys && npm run db:migrate",
     "nats": "nats-server -c infra/nats/nats.conf",
     "db:migrate": "tsx infra/scripts/migrate.ts",
     "dev": "concurrently -n user,notif,gateway -c cyan,magenta,green \"npm:dev:user\" \"npm:dev:notif\" \"npm:dev:gateway\"",

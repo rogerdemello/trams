@@ -53,6 +53,25 @@ source. The four compose defects are corrected but remain **unverified**, for th
 reason recorded above — and finding four of them by review is the argument for
 why review is not a substitute for running it.
 
+A third pass cloned the published repository and followed the README literally,
+which is the only check that exercises what a reader actually gets. It found two
+more, both invisible from a working tree:
+
+| Defect                                                               | Why it was invisible before                                                                             |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm run bootstrap` ran before anything compiled `@trams/shared`     | `dist/` already existed locally and is gitignored, so only a clone is missing it                        |
+| `npm install` compiles `better-sqlite3` from source under a lockfile | The lockfile path is only taken by someone installing from a checkout, not by the machine that wrote it |
+
+The first is a real ordering bug in the documented path and is fixed: `bootstrap`
+now builds first. The second is an npm interaction rather than a defect here --- a
+`package.json` containing only `better-sqlite3` reproduces it --- and is documented
+with its workaround under Troubleshooting in the README.
+
+The pattern across all three passes is worth stating plainly: every defect found
+after the first was invisible from the machine that wrote the code. Passing gates
+described one environment, and each new environment --- a different path, a
+container, a clean clone --- produced a new failure.
+
 Runnable instructions are in [`README.md`](README.md).
 
 ---
