@@ -111,6 +111,36 @@ async function main(): Promise<void> {
     JSON.stringify(readyBody),
   );
 
+  // The first thing a new reader does is open the base URL. Answering that with
+  // a 404 is a dead end, so the catalogue is part of the contract and gets
+  // checked like the rest of it.
+  const index = await fetch(`${API}`);
+  const indexBody = (await index.json()) as {
+    endpoints?: Record<string, Array<{ path: string }>>;
+  };
+  const advertised = Object.values(indexBody.endpoints ?? {}).flat();
+
+  check('API root serves the endpoint catalogue', index.status === 200 && advertised.length > 0);
+  check(
+    'catalogue lists a path that really works',
+    advertised.some((entry) => entry.path === `${new URL(API).pathname}/auth/register`),
+    advertised
+      .slice(0, 3)
+      .map((entry) => entry.path)
+      .join(', '),
+  );
+
+  const unknownRoute = await fetch(`${API}/definitely-not-a-route`);
+  const unknownRouteBody = (await unknownRoute.json()) as { code?: string; hint?: string };
+  check(
+    'a wrong path still 404s, and says where the map is',
+    unknownRoute.status === 404 &&
+      unknownRouteBody.code === 'NOT_FOUND' &&
+      typeof unknownRouteBody.hint === 'string' &&
+      unknownRouteBody.hint.length > 0,
+    JSON.stringify(unknownRouteBody),
+  );
+
   // ── Registration ───────────────────────────────────────────────────────────
   section('2. Registration through the public API');
 

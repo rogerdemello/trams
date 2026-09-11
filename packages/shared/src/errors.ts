@@ -35,6 +35,12 @@ export interface ProblemDetails {
   detail?: string;
   correlationId?: string;
   errors?: Array<{ path: string; message: string }>;
+  /**
+   * An RFC 9457 extension member: what the caller could do next. Present only
+   * where there is a genuinely useful next step, so its absence never has to be
+   * interpreted — `detail` says what went wrong, `hint` says where to go.
+   */
+  hint?: string;
 }
 
 export class AppError extends Error {

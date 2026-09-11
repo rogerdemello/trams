@@ -51,7 +51,7 @@ Then, in a third terminal:
 npm run smoke
 ```
 
-That runs 26 end-to-end checks against the live system, including the one that
+That runs 29 end-to-end checks against the live system, including the one that
 matters most: registering a user through the public API causes a notification to
 appear **without anything having called the Notification Service directly**.
 
@@ -78,7 +78,7 @@ Trams smoke test  →  http://127.0.0.1:8080
   PASS  notification has a rendered subject
   PASS  correlation id survived the whole path, including the broker hop
 ...
-Result: 26 passed, 0 failed  (26 checks)
+Result: 29 passed, 0 failed  (29 checks)
 ```
 
 </details>
@@ -109,6 +109,10 @@ kept honest.
 
 ```bash
 API=http://localhost:8080/api/v1
+
+# Start here. The API root lists every endpoint, how to authenticate, and where
+# the docs are — so you never have to guess a path.
+curl -s $API | jq
 
 # Register — note the correlation id, which we will follow through the system
 curl -s -X POST $API/auth/register \
@@ -226,12 +230,12 @@ events.** See [security.md §3](docs/security.md#3-broker-authorization-in-detai
 ## Tests
 
 ```bash
-npm test               # 97 tests: 67 unit + 30 integration
+npm test               # 105 tests: 75 unit + 30 integration
 npm run test:unit      # fast, no dependencies
 npm run test:integration   # boots a real nats-server with real mTLS
-npm run typecheck      # tsc --build --force across all projects
+npm run typecheck      # all projects, plus the test suite and infra scripts
 npm run lint           # eslint, zero warnings
-npm run smoke          # 26 end-to-end checks against a running system
+npm run smoke          # 29 end-to-end checks against a running system
 ```
 
 The integration suite **does not mock the broker**. Every guarantee being
@@ -241,7 +245,7 @@ confirm them. It spins up a real `nats-server` with the same TLS configuration
 and the same per-service permissions as production; several tests assert that an
 operation is _denied_, which is only meaningful against the real policy.
 
-Current state: **97 passing**, clean typecheck, zero lint warnings.
+Current state: **105 passing**, clean typecheck, zero lint warnings.
 
 ---
 

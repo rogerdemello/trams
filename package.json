@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "build": "tsc --build",
-    "typecheck": "tsc --build --force",
+    "typecheck": "tsc --build --force && tsc -p tests/tsconfig.json",
     "clean": "tsc --build --clean",
     "certs": "node infra/scripts/gen-certs.mjs",
     "keys": "node infra/scripts/gen-jwt-keys.mjs",

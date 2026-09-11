@@ -21,8 +21,8 @@ Verified state at completion:
 
 | Gate                 | Result                                                                          |
 | -------------------- | ------------------------------------------------------------------------------- |
-| `npm test`           | **97 passing** (67 unit, 30 integration against a real broker)                  |
-| `npm run smoke`      | **26/26** end-to-end checks against three live processes                        |
+| `npm test`           | **105 passing** (75 unit, 30 integration against a real broker)                 |
+| `npm run smoke`      | **29/29** end-to-end checks against three live processes                        |
 | `npm run typecheck`  | clean (`tsc --build --force`, all projects)                                     |
 | `npm run lint`       | clean, zero warnings                                                            |
 | Broker-outage test   | `201` returned with the broker down; event published on recovery, **zero loss** |

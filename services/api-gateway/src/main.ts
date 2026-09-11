@@ -14,6 +14,7 @@ import {
   loadConfig,
   AppError,
 } from '@trams/shared';
+import { API_PREFIX, discoveryRoutes } from './discovery.js';
 import { createProxy } from './proxy.js';
 import { apiRoutes } from './routes.js';
 
@@ -53,6 +54,10 @@ async function main(): Promise<void> {
     trustProxy: true,
     bodyLimit: config.BODY_LIMIT_BYTES,
     requestIdHeader: false,
+    // `/api/v1` and `/api/v1/` are the same resource to every human who types
+    // one of them, so treating them as different routes only ever produces a
+    // 404 that teaches the caller nothing.
+    ignoreTrailingSlash: true,
   });
 
   // ── Edge hardening ─────────────────────────────────────────────────────────
@@ -111,7 +116,12 @@ async function main(): Promise<void> {
   });
 
   await app.register(correlation);
-  await app.register(errorHandler);
+  await app.register(errorHandler, {
+    // A 404 from the public edge is usually someone exploring, so it should say
+    // where the map is. The backends deliberately pass no hint: their 404s are
+    // seen by this gateway, not by a person.
+    notFoundHint: `See GET ${API_PREFIX} for the list of available endpoints.`,
+  });
   await app.register(bearerAuth, { verifier });
 
   /**
@@ -144,13 +154,19 @@ async function main(): Promise<void> {
     logger,
   });
 
+  // Discovery first, at the root rather than under the prefix, so that both the
+  // server root and the API root answer with something useful.
+  await app.register(discoveryRoutes, { version: '1.0.0' });
+
   await app.register(apiRoutes, {
     userProxy,
     notificationProxy,
     authRateLimit: { max: config.AUTH_RATE_LIMIT_MAX, timeWindow: config.RATE_LIMIT_WINDOW },
     // Versioned from the start. Adding a version later means either breaking
-    // every client or running an unversioned surface forever.
-    prefix: '/api/v1',
+    // every client or running an unversioned surface forever. The prefix is
+    // imported rather than repeated so the discovery document cannot advertise
+    // paths the router does not serve.
+    prefix: API_PREFIX,
   });
 
   shutdown.register('http-server', () => app.close());

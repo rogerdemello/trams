@@ -38,11 +38,91 @@ tags:
     description: Read-only history of what the event consumer delivered.
   - name: Operations
     description: Liveness and readiness probes (served outside /api/v1).
+  - name: Discovery
+    description: The endpoint catalogue, served at the API root so the base URL is not a dead end.
 
 security:
   - bearerAuth: []
 
 paths:
+  /:
+    get:
+      tags: [Discovery]
+      summary: Endpoint catalogue
+      description: >
+        The document served at the API root. Lists every endpoint with its method, path,
+        required authorisation, and a one-line summary, alongside links to the reference
+        documentation and how to authenticate. Unauthenticated: it advertises only paths
+        that are already public knowledge once the gateway is reachable, and names no
+        internal host, port, or credential. Held to the real route table by
+        tests/unit/discovery.test.ts.
+      security: []
+      responses:
+        '200':
+          description: The catalogue.
+          headers:
+            cache-control:
+              schema: { type: string }
+              description: 'public, max-age=300 — the document is static for the life of the process.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, version, endpoints]
+                properties:
+                  name: { type: string, example: Trams API }
+                  version: { type: string, example: '1.0.0' }
+                  apiVersion: { type: string, example: /api/v1 }
+                  description: { type: string }
+                  documentation:
+                    type: object
+                    properties:
+                      reference: { type: string, example: docs/api.md }
+                      openapi: { type: string, example: docs/openapi.yaml }
+                      architecture:
+                        { type: string, example: docs/architecture.md }
+                  health:
+                    type: object
+                    properties:
+                      liveness: { type: string, example: /health }
+                      readiness: { type: string, example: /ready }
+                  authentication:
+                    type: object
+                    properties:
+                      scheme: { type: string, example: Bearer }
+                      obtain: { type: string, example: POST /api/v1/auth/login }
+                      header: { type: string }
+                      accessTokenTtl: { type: string, example: 15 minutes }
+                      note: { type: string }
+                  conventions:
+                    type: object
+                    properties:
+                      errors: { type: string }
+                      correlation: { type: string }
+                  endpoints:
+                    type: object
+                    description: Endpoints grouped by area.
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: object
+                        required: [method, path, auth, summary]
+                        properties:
+                          method:
+                            type: string
+                            enum: [GET, POST, PATCH, DELETE]
+                          path: { type: string, example: /api/v1/auth/register }
+                          auth:
+                            type: string
+                            enum: [public, user, admin]
+                            description: >
+                              public — no token; user — any authenticated caller;
+                              admin — the admin role.
+                          summary: { type: string }
+                  notes:
+                    type: array
+                    items: { type: string }
+
   /auth/register:
     post:
       tags: [Authentication]

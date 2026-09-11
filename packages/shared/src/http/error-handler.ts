@@ -26,7 +26,16 @@ function messageOf(error: unknown): string {
  * and an unexpected error can never accidentally return a stack trace because
  * no route is responsible for formatting its own failures.
  */
-const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
+export interface ErrorHandlerOptions {
+  /**
+   * Appended to a 404 as the problem document's `hint`. Set it where a human
+   * reads the response — the public edge — and leave it unset on the internal
+   * services, whose 404s are consumed by the gateway rather than by a person.
+   */
+  notFoundHint?: string;
+}
+
+const errorHandlerPlugin: FastifyPluginAsync<ErrorHandlerOptions> = async (app, opts) => {
   app.setErrorHandler((error, request, reply) => {
     const correlationId = request.correlationId;
 
@@ -76,6 +85,7 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
       AppError.notFound(`Route ${request.method} ${request.url}`),
       request.correlationId,
     );
+    if (opts.notFoundHint) problem.hint = opts.notFoundHint;
     return reply.status(404).type('application/problem+json').send(problem);
   });
 };

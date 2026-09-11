@@ -69,6 +69,48 @@ attacking.
 
 ---
 
+## Discovery
+
+The base URL answers with the endpoint catalogue rather than a 404, so the
+fastest way to orient yourself in this API is to ask it:
+
+```bash
+curl -s localhost:8080/api/v1 | jq
+```
+
+It returns the name and version, links to these documents, how to authenticate,
+and every endpoint with its method, path, required authorisation, and a one-line
+summary. `GET /` gives a shorter version for anyone who drops the path.
+
+The catalogue is hand-written, so it is held to the routes by a test:
+`tests/unit/discovery.test.ts` registers the real route plugin and fails if a
+route is missing from the catalogue, listed there but not registered, or
+recorded with the wrong method. A document that quietly lies about the API is
+worse than none, because the reader cannot tell.
+
+Discovery does not swallow genuine mistakes -- a path that does not exist still
+returns `404`, now with a `hint` pointing back here:
+
+```json
+{
+  "type": "https://trams.local/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "code": "NOT_FOUND",
+  "detail": "Route GET /api/v1/nope not found",
+  "correlationId": "b7f0f958-ffc8-4c7c-85c0-a9b8692ee7f6",
+  "hint": "See GET /api/v1 for the list of available endpoints."
+}
+```
+
+`hint` is an RFC 9457 extension member and appears only where there is a useful
+next step, so its absence never has to be interpreted. Only the gateway sets it:
+a 404 from a backend service is read by the gateway, not by a person.
+
+Trailing slashes are ignored, so `/api/v1` and `/api/v1/` are the same resource.
+
+---
+
 ## Operational endpoints
 
 Outside `/api/v1`, on every component (`:8080`, `:4001`, `:4002`):
