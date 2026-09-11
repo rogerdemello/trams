@@ -1,0 +1,178 @@
+===============================================================================
+TRAMS -- What this project is
+===============================================================================
+
+A small system of three backend services that demonstrates how independent
+services can cooperate without calling each other directly.
+
+Written for an internship assignment. The brief is kept verbatim in
+docs/assignment.md.
+
+
+-------------------------------------------------------------------------------
+THE SHORT VERSION
+-------------------------------------------------------------------------------
+
+You register a user. A welcome notification appears. Nothing called the
+notification service to make that happen.
+
+That sentence is the whole project. Everything below is how it is made true,
+and how it is kept true when things go wrong.
+
+
+-------------------------------------------------------------------------------
+THE THREE COMPONENTS
+-------------------------------------------------------------------------------
+
+API Gateway (port 8080)
+  The only part of the system reachable from outside. It holds no business
+  logic and no database. Its job is policy: check the token, limit the request
+  rate, allow only known origins, attach a correlation id, normalise errors,
+  and forward the request. It holds only the public half of the signing key,
+  so it can verify a token but cannot create one -- deliberate, since it is
+  the component most exposed to attack.
+
+User Service (port 4001, private)
+  Owns accounts: registration, login, profile changes, deletion. Hashes
+  passwords with argon2id, issues short-lived access tokens and rotating
+  refresh tokens. Every change it makes to a user also records an event.
+
+Notification Service (port 4002, private)
+  Reads those events and turns them into notifications. It has no endpoint for
+  creating one. The only way to cause a notification is to cause an event.
+
+
+-------------------------------------------------------------------------------
+HOW THE TWO SERVICES TALK
+-------------------------------------------------------------------------------
+
+They do not. Not over HTTP, not over WebSockets, and not through a shared
+database. The assignment forbids the first two, and a shared database is the
+same coupling wearing a different hat.
+
+The only connection between them is a NATS JetStream message stream. The User
+Service publishes events onto it. The Notification Service reads from it.
+Neither knows the other's address, and neither has to be running for the other
+to work.
+
+What that buys, concretely: the Notification Service can be down for an hour
+and registrations still succeed. When it comes back, it processes everything it
+missed. Adding a second notification worker needs no coordination and no
+configuration -- the two simply share the work.
+
+
+-------------------------------------------------------------------------------
+WHY MESSAGES ARE NOT LOST
+-------------------------------------------------------------------------------
+
+The obvious way to publish an event is to save the user, then send the message.
+That has a gap: if the process dies in between, or the broker is briefly
+unreachable, the user exists and the notification never happens. No amount of
+retrying around the send closes it, because the gap is between two systems that
+do not share a transaction.
+
+So the event is written into the database in the same transaction as the user.
+Either both land or neither does. A separate background publisher drains those
+rows to the broker afterwards, retrying with backoff until it succeeds.
+
+The cost of that choice is that a message can be delivered more than once. That
+is the right trade -- a duplicate is recoverable, a lost event is not -- and the
+consumer is built to absorb it: a uniqueness constraint in the database means a
+repeated event is acknowledged without sending anything twice. The database
+decides, not application code, so it stays correct with any number of workers
+running at once.
+
+A message that can never succeed, such as one with a malformed payload, is not
+retried forever. It is moved to a dead-letter stream where it can be inspected.
+A message that failed for a temporary reason is retried, then dead-lettered
+only once its budget is exhausted. Telling those two cases apart is the
+difference between wasting the retry budget on something hopeless and throwing
+away something that would have worked.
+
+
+-------------------------------------------------------------------------------
+HOW IT IS SECURED
+-------------------------------------------------------------------------------
+
+Encryption alone is not enough. An encrypted connection to a broker that lets
+any authenticated client publish anything has moved the problem, not solved it.
+So there are two independent layers.
+
+Mutual TLS proves a client is a legitimate part of this system. Per-service
+permissions on the broker prove which service it is and what it may do:
+
+  - The User Service may publish user events. It cannot read the stream back.
+  - The Notification Service may read the stream and write dead letters. It
+    cannot publish a user event.
+
+Neither service can do the other's job. If one is compromised, it still cannot
+forge account events or read the event history. That boundary is enforced by
+the broker, not by a convention the code is trusted to follow.
+
+Passwords are hashed with argon2id. Refresh tokens are stored hashed and rotate
+on every use, so a stolen one stops working and its reuse is detectable. Every
+secret comes from the environment, and in production the configuration loader
+refuses to fall back to a default -- a missing secret stops the process at
+startup instead of quietly becoming a well-known value.
+
+
+-------------------------------------------------------------------------------
+RUNNING IT
+-------------------------------------------------------------------------------
+
+No Docker needed. Full instructions, including a troubleshooting section, are
+in README.md. In short:
+
+    npm install          (see README if this fails to compile)
+    cp .env.example .env
+    npm run bootstrap    compile, generate certificates and keys, migrate
+    npm run nats         start the broker, leave it running
+    npm run dev          start all three services
+
+Then, in another terminal:
+
+    npm run smoke        29 checks against the running system
+
+Or just open http://localhost:8080/api/v1 -- the API lists its own endpoints.
+
+
+-------------------------------------------------------------------------------
+WHERE THINGS ARE
+-------------------------------------------------------------------------------
+
+  README.md                setup, a guided walkthrough, troubleshooting
+  plan.md                  the engineering plan and what verification found
+  docs/architecture.md     diagrams: system, event flow, the outbox sequence
+  docs/api.md              endpoint reference in prose
+  docs/openapi.yaml        the same surface as OpenAPI 3.1
+  docs/security.md         threat model mapped to the controls above
+  docs/assignment.md       the original brief, unedited
+
+  packages/shared/         the event contract both services agree on
+  services/                the three services
+  infra/                   broker configuration, certificate and key scripts
+  tests/                   unit, integration, and end-to-end smoke
+
+
+-------------------------------------------------------------------------------
+STATE
+-------------------------------------------------------------------------------
+
+105 automated tests pass: 75 unit, and 30 integration tests that run against a
+real broker rather than a stand-in. Mocking the broker would only confirm
+assumptions about how it behaves, and those assumptions are exactly what the
+reliability claims above depend on. Several tests assert that an operation is
+denied, which is meaningful only against the real security policy.
+
+29 end-to-end checks pass against three live processes. Type checking and
+linting are clean.
+
+All of it was last verified by cloning this repository fresh and following
+README.md literally, rather than from the machine it was written on. That
+distinction turned out to matter: doing so is what revealed the last two
+defects, both of which were invisible from a working copy.
+
+One thing is not verified and is marked as such wherever it appears: the Docker
+Compose setup has been written and reviewed but never executed, because Docker
+is not installed on the build machine. The instructions above are the path that
+has actually been run.

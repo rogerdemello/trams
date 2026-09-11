@@ -5,7 +5,8 @@ An event-driven microservices system: **API Gateway**, **User Service**, and
 **NATS JetStream** — no REST, no WebSockets, no shared database.
 
 Built for the internship assignment in [`docs/assignment.md`](docs/assignment.md).
-The engineering plan is in [`plan.md`](plan.md).
+A plain-language overview of what the system does is in
+[`ABOUT.txt`](ABOUT.txt); the engineering plan is in [`plan.md`](plan.md).
 
 ```
 Client ──HTTPS──► API Gateway ──internal HTTP──► User Service
