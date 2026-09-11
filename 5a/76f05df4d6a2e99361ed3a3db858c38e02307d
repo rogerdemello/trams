@@ -1,0 +1,49 @@
+.gitattributes
+  s_45f1b53d151647::t_4208c23d05689a 1-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "autter_version": "1.6.9",
+  "base_commit_sha": "5a76f05df4d6a2e99361ed3a3db858c38e02307d",
+  "branch": "main",
+  "prompts": {
+    "s_45f1b53d151647": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24e1abab-d40c-4328-a233-a24a0807ce0c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "rogerdemello <rogerdemello289@gmail.com>",
+      "messages_url": "cas:ce4ce72f6ed95a5e658d1718303b6726bb39fd014e168f671b5cde2e744fa949",
+      "total_additions": 11,
+      "total_deletions": 0,
+      "accepted_lines": 11,
+      "overriden_lines": 0
+    }
+  },
+  "sessions": {
+    "s_45f1b53d151647": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24e1abab-d40c-4328-a233-a24a0807ce0c",
+        "model": "claude-opus-5"
+      },
+      "human_author": "rogerdemello <rogerdemello289@gmail.com>",
+      "messages_url": "cas:ce4ce72f6ed95a5e658d1718303b6726bb39fd014e168f671b5cde2e744fa949",
+      "stats": {
+        "total_additions": 11,
+        "total_deletions": 0,
+        "accepted_lines": 11,
+        "overriden_lines": 0,
+        "files": {
+          ".gitattributes": {
+            "total_additions": 11,
+            "total_deletions": 0,
+            "accepted_lines": 11,
+            "overriden_lines": 0
+          }
+        }
+      }
+    }
+  }
+}
