@@ -36,6 +36,23 @@ instead of 403, and an `OutboxPublisher` batch loop that abandoned every row
 after the first when invoked outside the polling loop. The last of these is
 pinned by a regression test.
 
+A later pass re-ran every gate from a clean checkout and fixed six more, five of
+which only appear outside the machine the project was built on:
+
+| Defect                                                                                 | Why it was invisible before                                              |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Test harness resolved its own directory from `import.meta.url.pathname`                | Percent-encoded — every path containing a space failed to find the certs |
+| `nats.conf` cert and store paths did not match the container's mounts                  | Compose was never executed; the broker would not have started            |
+| JetStream volume mounted at `/data`, which the config never reads                      | Same — the store would have been silently ephemeral                      |
+| Migration job lacked env the shared config schema requires under `NODE_ENV=production` | Same — it would exit 1 and block every service that waits on it          |
+| Image did not ship `infra/scripts/`, which the migration job runs                      | Same                                                                     |
+| No `.gitattributes`                                                                    | Only shows up when the repo is cloned on a different OS                  |
+
+The first was a genuine portability bug in the test suite and is fixed at the
+source. The four compose defects are corrected but remain **unverified**, for the
+reason recorded above — and finding four of them by review is the argument for
+why review is not a substitute for running it.
+
 Runnable instructions are in [`README.md`](README.md).
 
 ---
@@ -331,9 +348,14 @@ Failure-mode checks, which are the ones that actually demonstrate the design:
 
 ### Definition of done
 
-- [ ] Every brief deliverable exists — source, README, architecture diagram, API docs, local run instructions
-- [ ] User Service and Notification Service share no HTTP, WS, or database edge
-- [ ] Killing NATS mid-run loses zero events
-- [ ] Duplicate delivery produces exactly one notification
-- [ ] Every secret is env-driven; the repo contains none
-- [ ] `npm test`, `npm run typecheck`, `npm run lint` all pass
+- [x] Every brief deliverable exists — source, README, architecture diagram, API docs, local run instructions
+- [x] User Service and Notification Service share no HTTP, WS, or database edge
+- [x] Killing NATS mid-run loses zero events
+- [x] Duplicate delivery produces exactly one notification
+- [x] Every secret is env-driven; the repo contains none
+- [x] `npm test`, `npm run typecheck`, `npm run lint` all pass
+
+Each line is checked against a run, not against intent. The last one is the
+cheapest to verify and the first four are the ones the brief is actually asking
+about; `tests/integration/reliability.test.ts` covers rows three and four, and
+`git ls-files` carries no `.env`, `.pem`, or `.db` for row five.
